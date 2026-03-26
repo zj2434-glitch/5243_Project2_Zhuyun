@@ -9,13 +9,14 @@ library(dplyr)
 library(tidyr)
 library(ggplot2)
 
+# Make data safe to print in DT tables
 safe_dt_df <- function(df) {
   df <- as.data.frame(df, stringsAsFactors = FALSE, check.names = FALSE)
   if (ncol(df) == 0) return(df)
-
+  
   for (nm in names(df)) {
     x <- df[[nm]]
-
+    
     if (is.factor(x)) {
       df[[nm]] <- as.character(x)
     } else if (inherits(x, c("Date", "POSIXct", "POSIXlt", "POSIXt"))) {
@@ -33,11 +34,13 @@ safe_dt_df <- function(df) {
       )
     }
   }
-
+  
   names(df) <- as.character(names(df))
   df
 }
 
+
+# Shared DT table settings used across tabs
 make_dt <- function(df, page_len = 8) {
   DT::datatable(
     safe_dt_df(df),
@@ -54,10 +57,11 @@ make_dt <- function(df, page_len = 8) {
   )
 }
 
+# Main app layout
 ui <- page_navbar(
   title = "Interactive Data Cleaning, Feature Engineering, and EDA Studio",
   theme = bs_theme(version = 5, bootswatch = "flatly"),
-
+  
   tags$head(
     tags$style(HTML(" 
       .metric-card {
@@ -136,7 +140,7 @@ ui <- page_navbar(
       });
     "))
   ),
-
+  
   nav_panel(
     "Home",
     page_fluid(
@@ -179,13 +183,13 @@ ui <- page_navbar(
           div(
             class = "team-box",
             p(tags$b("Zhuyun Jin"), " (zj2434)"),
-            p(tags$b("Megan Wang"), " (placeholder)")
+            p(tags$b("Megan Wang"), " (mw3856)")
           )
         )
       )
     )
   ),
-
+  
   nav_panel(
     "Upload Data",
     page_sidebar(
@@ -204,7 +208,7 @@ ui <- page_navbar(
         ),
         actionButton("load_data", "Load Data", class = "btn-primary")
       ),
-
+      
       layout_columns(
         col_widths = c(4, 4, 4),
         card(
@@ -229,7 +233,7 @@ ui <- page_navbar(
           )
         )
       ),
-
+      
       br(),
       h3("Dataset Information"),
       verbatimTextOutput("data_info"),
@@ -241,7 +245,7 @@ ui <- page_navbar(
       DTOutput("data_preview")
     )
   ),
-
+  
   nav_panel(
     "Preprocessing",
     page_sidebar(
@@ -261,9 +265,50 @@ ui <- page_navbar(
           ),
           selected = "None"
         ),
-        checkboxInput("scale_numeric", "Scale numeric columns (z-score)", FALSE)
+        checkboxInput("scale_numeric", "Scale numeric columns (z-score)", FALSE),
+        hr(),
+        h4("Categorical handling"),
+        selectInput(
+          "encoding_method",
+          "Categorical encoding",
+          choices = c(
+            "None",
+            "Convert character columns to factors",
+            "One-hot encode selected categorical columns"
+          ),
+          selected = "None"
+        ),
+        helpText("Convert character columns to factors to keep the same number of columns, or create 0/1 dummy columns for selected categorical variables. Factor conversion is usually safer; one-hot encoding is more visible for modeling workflows."),
+        uiOutput("one_hot_cols_ui"),
+        br(),
+        selectInput(
+          "manual_type_method",
+          "Manual type conversion",
+          choices = c(
+            "None",
+            "Convert one column to factor",
+            "Convert one column to numeric"
+          ),
+          selected = "None"
+        ),
+        uiOutput("manual_type_col_ui"),
+        helpText("Use this for one controlled conversion. Numeric to factor is useful for grouping. Character or factor to numeric works best when the values already look like numbers."),
+        hr(),
+        h4("Outlier handling"),
+        selectInput(
+          "outlier_method",
+          "Outlier method",
+          choices = c("None", "Remove outliers using IQR rule"),
+          selected = "None"
+        ),
+        div(
+          class = "info-box",
+          strong("IQR rule side note:"),
+          p("For each selected numeric column, values below Q1 - 1.5×IQR or above Q3 + 1.5×IQR are treated as outliers. A row is removed if it is flagged by any selected column.")
+        ),
+        uiOutput("outlier_cols_ui")
       ),
-
+      
       layout_columns(
         col_widths = c(4, 4, 4),
         card(
@@ -288,7 +333,7 @@ ui <- page_navbar(
           )
         )
       ),
-
+      
       br(),
       h3("Preprocessing Summary"),
       verbatimTextOutput("preprocess_summary"),
@@ -297,7 +342,7 @@ ui <- page_navbar(
       DTOutput("processed_preview")
     )
   ),
-
+  
   nav_panel(
     "Feature Engineering",
     page_sidebar(
@@ -339,14 +384,11 @@ ui <- page_navbar(
       h3("Feature Engineering Summary"),
       verbatimTextOutput("feature_summary"),
       br(),
-      uiOutput("feature_plot_ui"),
-      br(),
       h3("Engineered Data Preview"),
-      div(class = "info-box", verbatimTextOutput("engineered_debug")),
       DTOutput("engineered_preview")
     )
   ),
-
+  
   nav_panel(
     "EDA",
     page_sidebar(
@@ -361,7 +403,12 @@ ui <- page_navbar(
         ),
         uiOutput("eda_x_ui"),
         uiOutput("eda_y_ui"),
-        uiOutput("eda_group_ui")
+        uiOutput("eda_group_ui"),
+        uiOutput("eda_bins_ui"),
+        hr(),
+        h4("Optional EDA filter"),
+        uiOutput("eda_filter_col_ui"),
+        uiOutput("eda_filter_value_ui")
       ),
       h3("Exploratory Data Analysis"),
       plotOutput("eda_plot", height = "560px"),
@@ -370,7 +417,7 @@ ui <- page_navbar(
       verbatimTextOutput("eda_summary")
     )
   ),
-
+  
   nav_panel(
     "Download",
     page_fluid(
@@ -383,20 +430,21 @@ ui <- page_navbar(
 )
 
 server <- function(input, output, session) {
-
+  
   raw_data <- reactiveVal(NULL)
-  feature_state <- reactiveVal(NULL)
+  feature_history <- reactiveVal(list())
   rename_state <- reactiveVal(list())
   dropped_cols <- reactiveVal(character(0))
-
+  
+  # Load raw dataset from uploaded file or built-in choice
   load_df_from_input <- function() {
     df <- NULL
-
+    
     if (!is.null(input$file_upload)) {
       file_path <- input$file_upload$datapath
       file_name <- input$file_upload$name
       ext <- tolower(tools::file_ext(file_name))
-
+      
       if (ext == "csv") {
         df <- read_csv(file_path, show_col_types = FALSE)
       } else if (ext == "xlsx") {
@@ -415,53 +463,59 @@ server <- function(input, output, session) {
         df <- mtcars
       }
     }
-
+    
     if (!is.null(df)) {
       df <- as.data.frame(df, stringsAsFactors = FALSE, check.names = FALSE)
     }
-
+    
     df
   }
-
+  
+  # Load uploaded data or a built-in dataset
   observeEvent(input$load_data, {
     df <- load_df_from_input()
-
+    
     if (!is.null(df)) {
       raw_data(df)
-      feature_state(NULL)
+      feature_history(list())
       rename_state(list())
       dropped_cols(character(0))
-
+      
       updateCheckboxInput(session, "remove_duplicates", value = FALSE)
       updateCheckboxInput(session, "clean_names", value = FALSE)
       updateCheckboxInput(session, "scale_numeric", value = FALSE)
       updateSelectInput(session, "missing_method", selected = "None")
-
+      updateSelectInput(session, "encoding_method", selected = "None")
+      updateSelectizeInput(session, "one_hot_cols", selected = character(0))
+      updateSelectInput(session, "manual_type_method", selected = "None")
+      updateSelectInput(session, "outlier_method", selected = "None")
+      
       updateTextInput(session, "new_feature_name", value = "")
       updateSelectInput(session, "feature_method", selected = "None")
       updateTextInput(session, "rename_new_col", value = "")
-
+      
       updateSelectInput(session, "plot_type", selected = "Histogram")
     }
   }, ignoreInit = TRUE)
-
-  processed_data <- reactive({
+  
+  # Apply preprocessing steps before outlier removal and scaling
+  preprocessing_base <- reactive({
     req(raw_data())
-
+    
     df <- raw_data()
-
+    
     if (input$clean_names) {
       df <- janitor::clean_names(df)
     }
-
+    
     if (input$remove_duplicates) {
       df <- distinct(df)
     }
-
+    
     if (input$missing_method == "Drop rows with missing values") {
       df <- tidyr::drop_na(df)
     }
-
+    
     if (input$missing_method == "Fill numeric with mean") {
       numeric_cols <- names(df)[sapply(df, is.numeric)]
       for (col in numeric_cols) {
@@ -470,7 +524,7 @@ server <- function(input, output, session) {
         }
       }
     }
-
+    
     if (input$missing_method == "Fill numeric with median") {
       numeric_cols <- names(df)[sapply(df, is.numeric)]
       for (col in numeric_cols) {
@@ -479,7 +533,97 @@ server <- function(input, output, session) {
         }
       }
     }
-
+    
+    if (input$encoding_method == "Convert character columns to factors") {
+      char_cols <- names(df)[sapply(df, is.character)]
+      for (col in char_cols) {
+        df[[col]] <- as.factor(df[[col]])
+      }
+    }
+    
+    if (!is.null(input$manual_type_method) && input$manual_type_method != "None" &&
+        !is.null(input$manual_type_col) && input$manual_type_col %in% names(df)) {
+      target_col <- input$manual_type_col
+      
+      if (input$manual_type_method == "Convert one column to factor") {
+        df[[target_col]] <- as.factor(df[[target_col]])
+      }
+      
+      if (input$manual_type_method == "Convert one column to numeric") {
+        df[[target_col]] <- suppressWarnings(as.numeric(as.character(df[[target_col]])))
+      }
+    }
+    
+    if (input$encoding_method == "One-hot encode selected categorical columns") {
+      selected_dummy_cols <- input$one_hot_cols
+      if (!is.null(selected_dummy_cols) && length(selected_dummy_cols) > 0) {
+        valid_dummy_cols <- selected_dummy_cols[selected_dummy_cols %in% names(df)]
+        valid_dummy_cols <- valid_dummy_cols[sapply(df[valid_dummy_cols], function(x) is.character(x) || is.factor(x))]
+        
+        if (length(valid_dummy_cols) > 0) {
+          for (col in valid_dummy_cols) {
+            df[[col]] <- as.factor(df[[col]])
+          }
+          
+          dummy_mat <- stats::model.matrix(~ . - 1, data = df[valid_dummy_cols])
+          dummy_df <- as.data.frame(dummy_mat, check.names = FALSE)
+          names(dummy_df) <- janitor::make_clean_names(names(dummy_df), case = "snake")
+          
+          df <- bind_cols(df[setdiff(names(df), valid_dummy_cols)], dummy_df)
+        }
+      }
+    }
+    
+    as.data.frame(df, stringsAsFactors = FALSE, check.names = FALSE)
+  })
+  
+  output$outlier_cols_ui <- renderUI({
+    req(preprocessing_base())
+    df <- preprocessing_base()
+    numeric_cols <- names(df)[sapply(df, is.numeric)]
+    selected_vals <- if (!is.null(input$outlier_cols)) intersect(input$outlier_cols, numeric_cols) else numeric_cols
+    
+    if (input$outlier_method == "Remove outliers using IQR rule" && length(numeric_cols) > 0) {
+      selectInput(
+        "outlier_cols",
+        "Numeric columns for outlier removal",
+        choices = numeric_cols,
+        selected = selected_vals,
+        multiple = TRUE
+      )
+    } else {
+      NULL
+    }
+  })
+  
+  # Final preprocessed dataset used by later tabs
+  # Apply preprocessing steps to the raw data
+  processed_data <- reactive({
+    req(preprocessing_base())
+    
+    df <- preprocessing_base()
+    
+    if (input$outlier_method == "Remove outliers using IQR rule") {
+      selected_outlier_cols <- input$outlier_cols
+      if (!is.null(selected_outlier_cols) && length(selected_outlier_cols) > 0) {
+        valid_cols <- selected_outlier_cols[selected_outlier_cols %in% names(df)]
+        if (length(valid_cols) > 0) {
+          keep_rows <- rep(TRUE, nrow(df))
+          for (col in valid_cols) {
+            if (is.numeric(df[[col]])) {
+              q1 <- quantile(df[[col]], 0.25, na.rm = TRUE)
+              q3 <- quantile(df[[col]], 0.75, na.rm = TRUE)
+              iqr_val <- q3 - q1
+              lower <- q1 - 1.5 * iqr_val
+              upper <- q3 + 1.5 * iqr_val
+              keep_rows <- keep_rows & (is.na(df[[col]]) | (df[[col]] >= lower & df[[col]] <= upper))
+            }
+          }
+          df <- df[keep_rows, , drop = FALSE]
+        }
+      }
+    }
+    
     if (input$scale_numeric) {
       numeric_cols <- names(df)[sapply(df, is.numeric)]
       if (length(numeric_cols) > 0) {
@@ -487,37 +631,49 @@ server <- function(input, output, session) {
         df[numeric_cols] <- as.data.frame(scaled_part)
       }
     }
-
+    
     as.data.frame(df, stringsAsFactors = FALSE, check.names = FALSE)
   })
-
+  
+  # Apply feature engineering, renaming, and column removal
+  # Apply feature engineering changes on top of processed data
   final_data <- reactive({
     req(processed_data())
-
+    
     df <- processed_data()
-    fs <- feature_state()
-
-    if (!is.null(fs) && fs$method != "None" && nzchar(fs$new_name) &&
-        fs$col1 %in% names(df) && fs$col2 %in% names(df) &&
-        fs$new_name != fs$col1 && fs$new_name != fs$col2) {
-
-      if (fs$method == "Sum of two columns") {
-        df[[fs$new_name]] <- df[[fs$col1]] + df[[fs$col2]]
-      }
-
-      if (fs$method == "Difference of two columns") {
-        df[[fs$new_name]] <- df[[fs$col1]] - df[[fs$col2]]
-      }
-
-      if (fs$method == "Product of two columns") {
-        df[[fs$new_name]] <- df[[fs$col1]] * df[[fs$col2]]
-      }
-
-      if (fs$method == "Ratio of two columns") {
-        df[[fs$new_name]] <- ifelse(df[[fs$col2]] == 0, NA, df[[fs$col1]] / df[[fs$col2]])
+    
+    fh <- feature_history()
+    if (length(fh) > 0) {
+      for (fs in fh) {
+        if (!is.null(fs) &&
+            fs$method != "None" &&
+            nzchar(fs$new_name) &&
+            fs$col1 %in% names(df) &&
+            fs$col2 %in% names(df) &&
+            !(fs$new_name %in% c(fs$col1, fs$col2)) &&
+            is.numeric(df[[fs$col1]]) &&
+            is.numeric(df[[fs$col2]]) &&
+            !(fs$new_name %in% names(df))) {
+          
+          if (fs$method == "Sum of two columns") {
+            df[[fs$new_name]] <- df[[fs$col1]] + df[[fs$col2]]
+          }
+          
+          if (fs$method == "Difference of two columns") {
+            df[[fs$new_name]] <- df[[fs$col1]] - df[[fs$col2]]
+          }
+          
+          if (fs$method == "Product of two columns") {
+            df[[fs$new_name]] <- df[[fs$col1]] * df[[fs$col2]]
+          }
+          
+          if (fs$method == "Ratio of two columns") {
+            df[[fs$new_name]] <- ifelse(df[[fs$col2]] == 0, NA, df[[fs$col1]] / df[[fs$col2]])
+          }
+        }
       }
     }
-
+    
     rn <- rename_state()
     if (length(rn) > 0) {
       current_names <- names(df)
@@ -529,31 +685,32 @@ server <- function(input, output, session) {
         }
       }
     }
-
+    
     drops <- dropped_cols()
     if (length(drops) > 0) {
-      df <- df[, setdiff(names(df), drops), drop = FALSE]
+      df <- df[, !(names(df) %in% drops), drop = FALSE]
     }
-
+    
     as.data.frame(df, stringsAsFactors = FALSE, check.names = FALSE)
   })
-
+  
+  # Keep select inputs in sync with the latest dataset
   observe({
-    req(processed_data())
+    req(final_data())
     df <- final_data()
     numeric_cols <- names(df)[sapply(df, is.numeric)]
     categorical_cols <- names(df)[!sapply(df, is.numeric)]
-
-    current_feature_col1 <- if (!is.null(input$feature_col1) && input$feature_col1 %in% names(processed_data())[sapply(processed_data(), is.numeric)]) input$feature_col1 else ""
-    current_feature_col2 <- if (!is.null(input$feature_col2) && input$feature_col2 %in% names(processed_data())[sapply(processed_data(), is.numeric)]) input$feature_col2 else ""
-
+    
+    current_feature_col1 <- if (!is.null(input$feature_col1) && input$feature_col1 %in% numeric_cols) input$feature_col1 else ""
+    current_feature_col2 <- if (!is.null(input$feature_col2) && input$feature_col2 %in% numeric_cols) input$feature_col2 else ""
+    
     current_eda_x <- if (!is.null(input$eda_x) && input$eda_x %in% numeric_cols) input$eda_x else if (length(numeric_cols) > 0) numeric_cols[1] else NULL
     current_eda_y <- if (!is.null(input$eda_y) && input$eda_y %in% numeric_cols) input$eda_y else if (length(numeric_cols) >= 2) numeric_cols[2] else NULL
     current_eda_group <- if (!is.null(input$eda_group) && input$eda_group %in% c("No grouping", categorical_cols)) input$eda_group else "No grouping"
-
-    updateSelectInput(session, "feature_col1", choices = c("", names(processed_data())[sapply(processed_data(), is.numeric)]), selected = current_feature_col1)
-    updateSelectInput(session, "feature_col2", choices = c("", names(processed_data())[sapply(processed_data(), is.numeric)]), selected = current_feature_col2)
-
+    
+    updateSelectInput(session, "feature_col1", choices = c("", numeric_cols), selected = current_feature_col1)
+    updateSelectInput(session, "feature_col2", choices = c("", numeric_cols), selected = current_feature_col2)
+    
     if (!is.null(current_eda_x)) {
       updateSelectInput(session, "eda_x", choices = numeric_cols, selected = current_eda_x)
     }
@@ -564,12 +721,46 @@ server <- function(input, output, session) {
       updateSelectInput(session, "eda_group", choices = c("No grouping", categorical_cols), selected = current_eda_group)
     }
   })
-
-  output$feature_col1_ui <- renderUI({
+  
+  # Manual type conversion input
+  output$manual_type_col_ui <- renderUI({
     req(processed_data())
-    numeric_cols <- names(processed_data())[sapply(processed_data(), is.numeric)]
+    
+    if (is.null(input$manual_type_method) || input$manual_type_method == "None") return(NULL)
+    
+    df <- processed_data()
+    choices <- names(df)
+    selected_val <- if (!is.null(input$manual_type_col) && input$manual_type_col %in% choices) input$manual_type_col else if (length(choices) > 0) choices[1] else NULL
+    
+    selectInput("manual_type_col", "Column to convert", choices = choices, selected = selected_val)
+  })
+  
+  # One-hot encoding input
+  output$one_hot_cols_ui <- renderUI({
+    req(processed_data())
+    
+    if (is.null(input$encoding_method) || input$encoding_method != "One-hot encode selected categorical columns") return(NULL)
+    
+    df <- processed_data()
+    categorical_cols <- names(df)[sapply(df, function(x) is.character(x) || is.factor(x))]
+    selected_vals <- if (!is.null(input$one_hot_cols)) intersect(input$one_hot_cols, categorical_cols) else character(0)
+    
+    if (length(categorical_cols) == 0) {
+      return(helpText("No character or factor columns are currently available for one-hot encoding."))
+    }
+    
+    tagList(
+      selectizeInput("one_hot_cols", "Categorical columns to one-hot encode", choices = categorical_cols, selected = selected_vals, multiple = TRUE),
+      helpText("This replaces each selected categorical column with 0/1 dummy columns. Use only when you want those categories represented numerically.")
+    )
+  })
+  
+  # Numeric column selectors for new features
+  output$feature_col1_ui <- renderUI({
+    req(final_data())
+    numeric_cols <- names(final_data())[sapply(final_data(), is.numeric)]
     selected_val <- if (!is.null(input$feature_col1) && input$feature_col1 %in% numeric_cols) input$feature_col1 else ""
-
+    
     selectInput(
       "feature_col1",
       "First numeric column",
@@ -577,12 +768,12 @@ server <- function(input, output, session) {
       selected = selected_val
     )
   })
-
+  
   output$feature_col2_ui <- renderUI({
-    req(processed_data())
-    numeric_cols <- names(processed_data())[sapply(processed_data(), is.numeric)]
+    req(final_data())
+    numeric_cols <- names(final_data())[sapply(final_data(), is.numeric)]
     selected_val <- if (!is.null(input$feature_col2) && input$feature_col2 %in% numeric_cols) input$feature_col2 else ""
-
+    
     selectInput(
       "feature_col2",
       "Second numeric column",
@@ -590,128 +781,175 @@ server <- function(input, output, session) {
       selected = selected_val
     )
   })
-
+  
+  # Column management inputs
   output$rename_old_col_ui <- renderUI({
     req(final_data())
     selectInput("rename_old_col", "Column to rename", choices = c("", names(final_data())), selected = "")
   })
-
+  
   output$drop_col_ui <- renderUI({
     req(final_data())
     selectInput("drop_col", "Column to remove", choices = c("", names(final_data())), selected = "")
   })
-
+  
+  # Add a new engineered feature to the running history
   observeEvent(input$create_feature, {
-    req(processed_data())
-    numeric_cols <- names(processed_data())[sapply(processed_data(), is.numeric)]
-
+    req(final_data())
+    
+    df_now <- final_data()
+    numeric_cols <- names(df_now)[sapply(df_now, is.numeric)]
+    new_name <- trimws(input$new_feature_name)
+    
     valid_request <- (
       input$feature_method != "None" &&
-      nzchar(trimws(input$new_feature_name)) &&
-      !is.null(input$feature_col1) &&
-      !is.null(input$feature_col2) &&
-      input$feature_col1 %in% numeric_cols &&
-      input$feature_col2 %in% numeric_cols &&
-      !(trimws(input$new_feature_name) %in% names(final_data()))
+        nzchar(new_name) &&
+        !is.null(input$feature_col1) &&
+        !is.null(input$feature_col2) &&
+        input$feature_col1 %in% numeric_cols &&
+        input$feature_col2 %in% numeric_cols &&
+        !(new_name %in% names(df_now))
     )
-
+    
     if (valid_request) {
-      feature_state(list(
-        new_name = trimws(input$new_feature_name),
+      fh <- feature_history()
+      fh[[length(fh) + 1]] <- list(
+        new_name = new_name,
         method = input$feature_method,
         col1 = input$feature_col1,
         col2 = input$feature_col2
-      ))
+      )
+      feature_history(fh)
+      
+      updateTextInput(session, "new_feature_name", value = "")
+      updateSelectInput(session, "feature_method", selected = "None")
     }
   }, ignoreInit = TRUE)
-
+  
+  # Clear all created features
   observeEvent(input$clear_feature, {
-    feature_state(NULL)
+    feature_history(list())
     updateTextInput(session, "new_feature_name", value = "")
     updateSelectInput(session, "feature_method", selected = "None")
   }, ignoreInit = TRUE)
-
+  
+  # Rename one column
   observeEvent(input$rename_column_btn, {
     req(final_data())
     old_nm <- input$rename_old_col
     new_nm <- trimws(input$rename_new_col)
-
+    
     if (!nzchar(old_nm) || !nzchar(new_nm)) return()
     if (!(old_nm %in% names(final_data()))) return()
     if (new_nm %in% names(final_data())) return()
-
+    
     rn <- rename_state()
     rn[[old_nm]] <- new_nm
     rename_state(rn)
     updateTextInput(session, "rename_new_col", value = "")
   }, ignoreInit = TRUE)
-
+  
+  # Remove one column from the final dataset
   observeEvent(input$drop_column_btn, {
     req(final_data())
     col_to_drop <- input$drop_col
     if (!nzchar(col_to_drop)) return()
     if (!(col_to_drop %in% names(final_data()))) return()
-
+    
     dropped_cols(unique(c(dropped_cols(), col_to_drop)))
   }, ignoreInit = TRUE)
-
-  output$feature_plot_ui <- renderUI({
-    req(final_data())
-    fs <- feature_state()
-    if (is.null(fs) || !(fs$new_name %in% names(final_data()))) return(NULL)
-
-    if (!is.numeric(final_data()[[fs$new_name]])) return(NULL)
-
-    tagList(
-      h3(paste("Distribution of", fs$new_name)),
-      div(class = "feature-plot-wrap", plotOutput("feature_plot", height = "100%"))
-    )
-  })
-
-  output$feature_plot <- renderPlot({
-    req(final_data())
-    fs <- feature_state()
-    req(!is.null(fs))
-    req(fs$new_name %in% names(final_data()))
-    req(is.numeric(final_data()[[fs$new_name]]))
-
-    ggplot(final_data(), aes(x = .data[[fs$new_name]])) +
-      geom_histogram(fill = "#7c4dff", color = "white", bins = 30, alpha = 0.9) +
-      labs(
-        title = paste("Distribution of", fs$new_name),
-        x = fs$new_name,
-        y = "Frequency"
-      ) +
-      theme_minimal(base_size = 15)
-  })
-
-  output$eda_x_ui <- renderUI({
+  
+  # EDA filter controls
+  output$eda_filter_col_ui <- renderUI({
     req(final_data())
     df <- final_data()
+    choices <- c("None", names(df))
+    selected_val <- if (!is.null(input$eda_filter_col) && input$eda_filter_col %in% choices) input$eda_filter_col else "None"
+    selectInput("eda_filter_col", "Filter column", choices = choices, selected = selected_val)
+  })
+  
+  output$eda_filter_value_ui <- renderUI({
+    req(final_data())
+    df <- final_data()
+    req(input$eda_filter_col)
+    
+    if (input$eda_filter_col == "None" || !(input$eda_filter_col %in% names(df))) return(NULL)
+    
+    col <- df[[input$eda_filter_col]]
+    
+    if (is.numeric(col)) {
+      rng <- range(col, na.rm = TRUE)
+      if (!all(is.finite(rng))) return(NULL)
+      sliderInput(
+        "eda_filter_range",
+        "Numeric range",
+        min = floor(rng[1]),
+        max = ceiling(rng[2]),
+        value = c(floor(rng[1]), ceiling(rng[2]))
+      )
+    } else {
+      vals <- unique(as.character(col))
+      vals <- vals[!is.na(vals)]
+      selectInput(
+        "eda_filter_values",
+        "Keep values",
+        choices = sort(vals),
+        selected = sort(vals),
+        multiple = TRUE
+      )
+    }
+  })
+  
+  # Filtered dataset used in the EDA tab
+  eda_data <- reactive({
+    req(final_data())
+    df <- final_data()
+    
+    if (is.null(input$eda_filter_col) || input$eda_filter_col == "None" || !(input$eda_filter_col %in% names(df))) {
+      return(df)
+    }
+    
+    col <- df[[input$eda_filter_col]]
+    
+    if (is.numeric(col)) {
+      req(input$eda_filter_range)
+      df <- df[!is.na(col) & col >= input$eda_filter_range[1] & col <= input$eda_filter_range[2], , drop = FALSE]
+    } else {
+      req(input$eda_filter_values)
+      keep_vals <- as.character(input$eda_filter_values)
+      df <- df[!is.na(col) & as.character(col) %in% keep_vals, , drop = FALSE]
+    }
+    
+    df
+  })
+  
+  output$eda_x_ui <- renderUI({
+    req(eda_data())
+    df <- eda_data()
     numeric_cols <- names(df)[sapply(df, is.numeric)]
-
+    
     if (input$plot_type %in% c("Histogram", "Boxplot", "Scatterplot") && length(numeric_cols) > 0) {
       selected_val <- if (!is.null(input$eda_x) && input$eda_x %in% numeric_cols) input$eda_x else numeric_cols[1]
       selectInput("eda_x", "X variable", choices = numeric_cols, selected = selected_val)
     }
   })
-
+  
   output$eda_y_ui <- renderUI({
-    req(final_data())
-    df <- final_data()
+    req(eda_data())
+    df <- eda_data()
     numeric_cols <- names(df)[sapply(df, is.numeric)]
-
+    
     if (input$plot_type == "Scatterplot" && length(numeric_cols) >= 2) {
       selected_val <- if (!is.null(input$eda_y) && input$eda_y %in% numeric_cols) input$eda_y else numeric_cols[2]
       selectInput("eda_y", "Y variable", choices = numeric_cols, selected = selected_val)
     }
   })
-
+  
   output$eda_group_ui <- renderUI({
-    req(final_data())
-    df <- final_data()
+    req(eda_data())
+    df <- eda_data()
     categorical_cols <- names(df)[!sapply(df, is.numeric)]
-
+    
     if (input$plot_type %in% c("Boxplot", "Scatterplot") && length(categorical_cols) > 0) {
       selected_val <- if (!is.null(input$eda_group) && input$eda_group %in% c("No grouping", categorical_cols)) input$eda_group else "No grouping"
       selectInput(
@@ -722,41 +960,47 @@ server <- function(input, output, session) {
       )
     }
   })
-
+  
+  output$eda_bins_ui <- renderUI({
+    if (!identical(input$plot_type, "Histogram")) return(NULL)
+    current_bins <- if (!is.null(input$eda_bins)) input$eda_bins else 30
+    sliderInput("eda_bins", "Histogram bins", min = 5, max = 50, value = current_bins, step = 1)
+  })
+  
   output$rows_value <- renderText({
     req(raw_data())
     nrow(raw_data())
   })
-
+  
   output$cols_value <- renderText({
     req(raw_data())
     ncol(raw_data())
   })
-
+  
   output$missing_value <- renderText({
     req(raw_data())
     sum(is.na(raw_data()))
   })
-
+  
   output$proc_rows_value <- renderText({
     req(processed_data())
     nrow(processed_data())
   })
-
+  
   output$proc_cols_value <- renderText({
     req(processed_data())
     ncol(processed_data())
   })
-
+  
   output$proc_missing_value <- renderText({
     req(processed_data())
     sum(is.na(processed_data()))
   })
-
+  
   output$data_info <- renderText({
     req(raw_data())
     df <- raw_data()
-
+    
     paste0(
       "Rows: ", nrow(df), "\n",
       "Columns: ", ncol(df), "\n",
@@ -765,29 +1009,37 @@ server <- function(input, output, session) {
       paste(names(df), collapse = ", ")
     )
   })
-
+  
   output$column_type_summary <- renderTable({
     req(raw_data())
     df <- raw_data()
-
+    
     data.frame(
       Column = names(df),
       Type = sapply(df, function(x) class(x)[1]),
       stringsAsFactors = FALSE
     )
   })
-
+  
   output$data_preview <- renderDT({
     req(raw_data())
     make_dt(raw_data())
   })
-
+  
   output$preprocess_summary <- renderText({
     req(raw_data(), processed_data())
-
+    
     raw_df <- raw_data()
     proc_df <- processed_data()
-
+    
+    raw_char_cols <- names(raw_df)[vapply(raw_df, is.character, logical(1))]
+    one_hot_selected <- if (!is.null(input$one_hot_cols)) input$one_hot_cols else character(0)
+    dummy_cols_created <- if (length(one_hot_selected) == 0) {
+      0
+    } else {
+      sum(vapply(names(proc_df), function(nm) any(startsWith(nm, paste0(one_hot_selected, "_"))), logical(1)))
+    }
+    
     paste0(
       "Before preprocessing:\n",
       "Rows: ", nrow(raw_df), "\n",
@@ -801,34 +1053,46 @@ server <- function(input, output, session) {
       "- Remove duplicates: ", ifelse(input$remove_duplicates, "Yes", "No"), "\n",
       "- Standardize column names: ", ifelse(input$clean_names, "Yes", "No"), "\n",
       "- Missing value handling: ", input$missing_method, "\n",
+      "- Categorical encoding: ", input$encoding_method, "\n",
+      "- Character columns available before processing: ", length(raw_char_cols), "\n",
+      "- One-hot columns: ", if (length(one_hot_selected) > 0) paste(one_hot_selected, collapse = ", ") else "None", "\n",
+      "- Dummy columns created: ", dummy_cols_created, "\n",
+      "- Outlier handling: ", input$outlier_method, "\n",
+      "- Outlier columns: ", if (!is.null(input$outlier_cols) && length(input$outlier_cols) > 0) paste(input$outlier_cols, collapse = ", ") else "None", "\n",
       "- Scale numeric columns: ", ifelse(input$scale_numeric, "Yes", "No")
     )
   })
-
+  
   output$processed_preview <- renderDT({
     req(processed_data())
     make_dt(processed_data())
   })
-
+  
+  # Summary text for feature engineering actions
   output$feature_summary <- renderText({
     req(final_data())
-
+    
     lines <- c()
-    fs <- feature_state()
-
-    if (is.null(fs)) {
-      lines <- c(lines, "No engineered feature has been created yet.")
+    fh <- feature_history()
+    
+    if (length(fh) == 0) {
+      lines <- c(lines, "No engineered features have been created yet.")
     } else {
-      if (fs$new_name %in% names(final_data())) {
-        lines <- c(
-          lines,
-          paste0("Created feature: ", fs$new_name),
-          paste0("Method: ", fs$method),
-          paste0("Using columns: ", fs$col1, " and ", fs$col2)
-        )
+      lines <- c(lines, "Created features:")
+      for (i in seq_along(fh)) {
+        fs <- fh[[i]]
+        if (fs$new_name %in% names(final_data())) {
+          lines <- c(
+            lines,
+            paste0(
+              i, ". ", fs$new_name, " = ", fs$method,
+              " using ", fs$col1, " and ", fs$col2
+            )
+          )
+        }
       }
     }
-
+    
     rn <- rename_state()
     if (length(rn) > 0) {
       lines <- c(lines, "", "Renamed columns:")
@@ -836,39 +1100,33 @@ server <- function(input, output, session) {
         lines <- c(lines, paste0("- ", old_nm, " -> ", rn[[old_nm]]))
       }
     }
-
+    
     drops <- dropped_cols()
     if (length(drops) > 0) {
-      lines <- c(lines, "", "Removed columns:", paste0("- ", drops))
+      lines <- c(lines, "", "Removed columns:")
+      lines <- c(lines, paste0("- ", drops))
     }
-
+    
     lines <- c(lines, "", paste0("Total columns after feature engineering: ", ncol(final_data())))
     paste(lines, collapse = "\n")
   })
-
-  output$engineered_debug <- renderText({
-    req(final_data())
-    df <- final_data()
-    paste0(
-      "Rows: ", nrow(df), " | Columns: ", ncol(df), "\n",
-      "Names: ", paste(names(df), collapse = ", ")
-    )
-  })
-
+  
   output$engineered_preview <- DT::renderDT({
     req(final_data())
     make_dt(final_data())
   }, server = FALSE)
-
+  
+  # Main EDA plot
   output$eda_plot <- renderPlot({
-    req(final_data())
-    df <- final_data()
-
+    req(eda_data())
+    df <- eda_data()
+    req(nrow(df) > 0)
+    
     if (input$plot_type == "Histogram") {
       req(input$eda_x)
-
+      
       ggplot(df, aes(x = .data[[input$eda_x]])) +
-        geom_histogram(fill = "#60a5fa", color = "white", bins = 30) +
+        geom_histogram(fill = "#60a5fa", color = "white", bins = if (!is.null(input$eda_bins)) input$eda_bins else 30) +
         labs(
           title = paste("Histogram of", input$eda_x),
           x = input$eda_x,
@@ -877,7 +1135,7 @@ server <- function(input, output, session) {
         theme_minimal(base_size = 14)
     } else if (input$plot_type == "Boxplot") {
       req(input$eda_x)
-
+      
       if (!is.null(input$eda_group) && input$eda_group != "No grouping") {
         ggplot(df, aes(x = .data[[input$eda_group]], y = .data[[input$eda_x]], fill = .data[[input$eda_group]])) +
           geom_boxplot(alpha = 0.8) +
@@ -900,7 +1158,7 @@ server <- function(input, output, session) {
       }
     } else if (input$plot_type == "Scatterplot") {
       req(input$eda_x, input$eda_y)
-
+      
       if (!is.null(input$eda_group) && input$eda_group != "No grouping") {
         ggplot(df, aes(x = .data[[input$eda_x]], y = .data[[input$eda_y]], color = .data[[input$eda_group]])) +
           geom_point(size = 2.8, alpha = 0.85) +
@@ -924,10 +1182,10 @@ server <- function(input, output, session) {
     } else if (input$plot_type == "Correlation Heatmap") {
       numeric_df <- df[, sapply(df, is.numeric), drop = FALSE]
       req(ncol(numeric_df) >= 2)
-
+      
       cor_mat <- cor(numeric_df, use = "complete.obs")
       cor_df <- as.data.frame(as.table(cor_mat))
-
+      
       ggplot(cor_df, aes(Var1, Var2, fill = Freq)) +
         geom_tile(color = "white") +
         scale_fill_gradient2(low = "#1d4ed8", mid = "white", high = "#dc2626", midpoint = 0) +
@@ -944,14 +1202,24 @@ server <- function(input, output, session) {
         )
     }
   })
-
+  
   output$eda_summary <- renderText({
-    req(final_data())
-    df <- final_data()
-
+    req(eda_data())
+    df <- eda_data()
+    req(nrow(df) > 0)
+    
+    filter_text <- if (is.null(input$eda_filter_col) || input$eda_filter_col == "None") {
+      "EDA filter: None\n"
+    } else if (input$eda_filter_col %in% names(df) && is.numeric(df[[input$eda_filter_col]])) {
+      paste0("EDA filter: ", input$eda_filter_col, " in [", paste(input$eda_filter_range, collapse = ", "), "]\n")
+    } else {
+      paste0("EDA filter: ", input$eda_filter_col, " in ", paste(input$eda_filter_values, collapse = ", "), "\n")
+    }
+    
     if (input$plot_type == "Histogram") {
       req(input$eda_x)
       paste0(
+        filter_text,
         "Plot type: Histogram\n",
         "Variable: ", input$eda_x, "\n",
         "Mean: ", round(mean(df[[input$eda_x]], na.rm = TRUE), 3), "\n",
@@ -961,6 +1229,7 @@ server <- function(input, output, session) {
     } else if (input$plot_type == "Boxplot") {
       req(input$eda_x)
       paste0(
+        filter_text,
         "Plot type: Boxplot\n",
         "Variable: ", input$eda_x, "\n",
         "Min: ", round(min(df[[input$eda_x]], na.rm = TRUE), 3), "\n",
@@ -972,6 +1241,7 @@ server <- function(input, output, session) {
     } else if (input$plot_type == "Scatterplot") {
       req(input$eda_x, input$eda_y)
       paste0(
+        filter_text,
         "Plot type: Scatterplot\n",
         "X variable: ", input$eda_x, "\n",
         "Y variable: ", input$eda_y, "\n",
@@ -981,13 +1251,15 @@ server <- function(input, output, session) {
       numeric_df <- df[, sapply(df, is.numeric), drop = FALSE]
       req(ncol(numeric_df) >= 2)
       paste0(
+        filter_text,
         "Plot type: Correlation Heatmap\n",
         "Numeric variables included: ", paste(colnames(numeric_df), collapse = ", "), "\n",
         "Total numeric variables: ", ncol(numeric_df)
       )
     }
   })
-
+  
+  # Export the final dataset as CSV
   output$download_data <- downloadHandler(
     filename = function() {
       "final_dataset.csv"

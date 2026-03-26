@@ -1,0 +1,59 @@
+---
+title: 'Project 2 Report: Interactive Data Cleaning, Feature Engineering, and EDA
+  Studio'
+author: "Zhuyun Jin (zj2434) and Megan Wang (mw3856)"
+date: "March 25, 2026"
+output:
+  pdf_document:
+    toc: false
+  html_document:
+    toc: false
+    number_sections: false
+---
+
+## Deployed Application
+
+Live app: <https://zhuyunj.shinyapps.io/5243_project2/>
+
+## GitHub Repository
+
+GitHub repository: <https://github.com/zj2434-glitch/5243_Project2_Zhuyun>
+
+## Project Overview
+
+This project is an interactive R Shiny application for loading, cleaning, transforming, exploring, and exporting datasets through a user-friendly web interface. The goal of the app is to provide a complete mini workflow for users who want to work with data without writing code. The application is designed to be flexible enough for different datasets while remaining simple to navigate.
+
+Users can upload datasets in CSV, Excel, JSON, and RDS formats. For quick testing, the app also provides the built-in datasets `iris` and `mtcars`. After a dataset is loaded, the app displays basic dataset information, including the number of rows, number of columns, missing-value count, column types, and a preview table.
+
+## Main Functionalities
+
+### Data Cleaning and Preprocessing
+
+The preprocessing tab allows users to interactively apply common cleaning operations. Users can remove duplicate rows, standardize column names, handle missing values by either dropping incomplete rows or imputing numeric values with the mean or median, and scale numeric columns using z-score standardization. The app also supports converting character columns to factors, one-hot encoding selected categorical variables, manually converting a selected column to factor or numeric type, and removing outliers from selected numeric columns using the IQR rule. The processed data preview and summary update automatically so that users can immediately inspect the results of each transformation.
+
+### Feature Engineering
+
+The feature engineering tab allows users to create a new variable from two numeric columns using one of four operations: sum, difference, product, or ratio. The interface also allows users to rename existing columns and remove unnecessary columns. After each action, the app updates the engineered data preview and feature summary so that users can track how the dataset changes.
+
+### Exploratory Data Analysis
+
+The EDA tab provides several interactive visualization options: histogram, boxplot, scatterplot, and correlation heatmap. Users can dynamically select plot variables and, when appropriate, a grouping variable. The app also includes optional filtering before plotting. Numeric variables can be filtered by a selected range, while categorical variables can be filtered by selected values. A matching text summary is displayed below each plot to report descriptive statistics or correlation information.
+
+### Export
+
+The download tab allows users to export the final transformed dataset as a CSV file. This supports a full end-to-end workflow from raw data input to cleaned and engineered output.
+
+## How to Use the App
+
+1. Open the deployed application.
+2. In the **Upload Data** tab, upload a dataset or choose a built-in dataset.
+3. In the **Preprocessing** tab, apply cleaning and transformation steps.
+4. In the **Feature Engineering** tab, create a new feature, rename columns, or remove columns.
+5. In the **EDA** tab, explore the dataset with interactive plots and filters.
+6. In the **Download** tab, export the final dataset as a CSV file.
+
+## Team Contributions
+
+**Zhuyun Jin:** implemented the Shiny application, including data upload, preprocessing, feature engineering, EDA, and download functionality, and handled final debugging and deployment.
+
+**Megan Wang:** reviewed the interface and prepared the final written materials for submission, including the report and repository documentation.
